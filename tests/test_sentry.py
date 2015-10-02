@@ -205,26 +205,25 @@ services:
 class TalismanTest(unittest.TestCase):
     timeout = 0.01
 
-    @patch.object(Talisman, 'wait_for_status')
     @patch.object(UnitSentry, 'upload_scripts')
     @patch('amulet.sentry.helpers.default_environment')
-    def test_init(self, default_env, upload_scripts, wait_for_status):
+    def test_init(self, default_env, upload_scripts):
         default_env.return_value = 'local'
-        wait_for_status.return_value = mock_status
 
-        sentry = Talisman(['meteor'], timeout=self.timeout)
+        sentry = Talisman(['meteor'])
+        self.assertEqual(sentry.juju_env, 'local')
+        sentry.discover_units(mock_status)
 
         self.assertTrue('meteor/0' in sentry.unit)
         self.assertTrue('meteor/1' in sentry.unit)
 
-    @patch.object(Talisman, 'wait_for_status')
     @patch.object(UnitSentry, 'upload_scripts')
     @patch('amulet.sentry.helpers.default_environment')
-    def test_getitem(self, default_env, upload_scripts, wait_for_status):
+    def test_getitem(self, default_env, upload_scripts):
         default_env.return_value = 'local'
-        wait_for_status.return_value = mock_status
 
-        sentry = Talisman(['meteor'], timeout=self.timeout)
+        sentry = Talisman(['meteor'])
+        sentry.discover_units(mock_status)
 
         self.assertEqual(sentry['meteor/0'], sentry.unit['meteor/0'])
         self.assertSetEqual(set(sentry['meteor']), set(sentry.unit.values()))
@@ -238,23 +237,21 @@ class TalismanTest(unittest.TestCase):
         with self.assertRaises(KeyError):
             sentry['invalid/99']  # Non-existent unit in non-existent service.
 
-    @patch.object(Talisman, 'wait_for_status')
     @patch.object(UnitSentry, 'upload_scripts')
     @patch('amulet.sentry.helpers.default_environment')
-    def test_subordinate(self, default_env, upload_scripts, wait_for_status):
+    def test_subordinate(self, default_env, upload_scripts):
         default_env.return_value = 'local'
-        wait_for_status.return_value = mock_status
 
-        sentry = Talisman(['meteor', 'rsyslog-forwarder'], timeout=self.timeout)
+        sentry = Talisman(['meteor', 'rsyslog-forwarder'])
+        sentry.discover_units(mock_status)
 
         self.assertTrue('rsyslog-forwarder/0' in sentry.unit)
 
-    @patch.object(Talisman, '__init__', Mock(return_value=None))
     @patch('amulet.helpers.juju', Mock(return_value='status'))
     @patch('amulet.waiter.status')
     def test_wait_for_status(self, status):
         status.return_value = mock_status
-        talisman = Talisman([], timeout=self.timeout)
+        talisman = Talisman([], juju_env='local')
 
         talisman.wait_for_status('env', ['meteor'], self.timeout)
         talisman.wait_for_status('env', ['old'], self.timeout)
@@ -269,7 +266,6 @@ class TalismanTest(unittest.TestCase):
                                 talisman.wait_for_status, 'env', ['olderrord'], self.timeout)
         self.assertRaises(TimeoutError, talisman.wait_for_status, 'env', ['subpend'], self.timeout)
 
-    @patch.object(Talisman, '__init__', Mock(return_value=None))
     @patch('amulet.helpers.juju', Mock(return_value='status'))
     @patch('amulet.waiter.status')
     def test_wait_for_status_containers(self, status):
@@ -311,7 +307,7 @@ class TalismanTest(unittest.TestCase):
                 },
             },
         }
-        talisman = Talisman([], timeout=self.timeout)
+        talisman = Talisman([])
         talisman.wait_for_status('env', ['foo'], self.timeout)
         self.assertRaises(TimeoutError, talisman.wait_for_status, 'env', ['bar'], self.timeout)
 
@@ -326,7 +322,8 @@ class TalismanTest(unittest.TestCase):
         def set_state(which, key, value):
             status['services']['meteor']['units']['meteor/0'][which][key] = value
 
-        t = Talisman(['meteor'], timeout=self.timeout)
+        t = Talisman(['meteor'])
+        t.discover_units(status)
         t.wait(self.timeout)
 
         set_state('workload-status', 'current', 'unknown')
@@ -346,7 +343,8 @@ class TalismanTest(unittest.TestCase):
         set_state('juju-status', 'since', datetime.now().strftime('%d %b %Y %H:%M:%S'))
         self.assertRaises(TimeoutError, t.wait, self.timeout)
 
-        t = Talisman(['old'], timeout=self.timeout)
+        t = Talisman(['old'])
+        t.discover_units(status)
         juju_agent.return_value = None
         self.assertRaises(TimeoutError, t.wait, self.timeout)
 
@@ -356,12 +354,18 @@ class TalismanTest(unittest.TestCase):
         juju_agent.return_value = {}
         t.wait(self.timeout)
 
+        t._pending_units['old'] += 2
+        self.assertRaises(TimeoutError, t.wait, self.timeout)
+        t.discover_units(status)
+        t.wait(self.timeout)
+
     @patch('amulet.helpers.juju', Mock(return_value='status'))
     @patch('amulet.helpers.default_environment', Mock())
     @patch('amulet.waiter.status')
     def test_wait_for_messages(self, _status):
         status = _status.return_value = deepcopy(mock_status)
-        t = Talisman([], timeout=self.timeout)
+        t = Talisman([])
+        t.discover_units(status)
 
         def set_status(unit, message):
             service = unit.split('/')[0]
@@ -405,6 +409,77 @@ class TalismanTest(unittest.TestCase):
         self.assertRaises(TimeoutError, t.wait_for_messages, {'rsyslog-forwarder': 'ready'}, self.timeout)
 
         self.assertRaises(UnsupportedError, t.wait_for_messages, {'old': 'ready'}, self.timeout)
+
+    @patch.object(UnitSentry, 'fromunitdata', Mock())
+    @patch('amulet.helpers.juju', Mock(return_value='status'))
+    @patch('amulet.helpers.default_environment', Mock())
+    @patch('amulet.waiter.status')
+    def test_wait_for_statuses(self, _status):
+        juju_status = _status.return_value = deepcopy(mock_status)
+        t = Talisman([])
+        t.discover_units(juju_status)
+
+        def set_status(unit, status):
+            service = unit.split('/')[0]
+            juju_status['services'][service]['units'][unit]['workload-status']['current'] = status
+
+        t.wait_for_statuses({'meteor': 'active'}, self.timeout)
+        t.wait_for_statuses({'meteor': {'active'}}, self.timeout)
+        t.wait_for_statuses({'meteor': ['active', 'active']}, self.timeout)
+        self.assertRaises(TimeoutError, t.wait_for_statuses, {'meteor': {'active', 'blocked'}}, self.timeout)
+        self.assertRaises(TimeoutError, t.wait_for_statuses, {'meteor': ['active', 'blocked']}, self.timeout)
+
+        set_status('meteor/0', 'blocked')
+        self.assertRaises(TimeoutError, t.wait_for_statuses, {'meteor': 'active'}, self.timeout)
+        t.wait_for_statuses({'meteor': {'active'}}, self.timeout)
+        t.wait_for_statuses({'meteor': {'active', 'blocked'}}, self.timeout)
+        t.wait_for_statuses({'meteor': ['active', 'blocked']}, self.timeout)
+
+        set_status('meteor/1', 'blocked')
+        self.assertRaises(TimeoutError, t.wait_for_statuses, {'meteor': 'active'}, self.timeout)
+        self.assertRaises(TimeoutError, t.wait_for_statuses, {'meteor': {'active'}}, self.timeout)
+        self.assertRaises(TimeoutError, t.wait_for_statuses, {'meteor': {'active', 'blocked'}}, self.timeout)
+        self.assertRaises(TimeoutError, t.wait_for_statuses, {'meteor': ['active', 'blocked']}, self.timeout)
+
+        set_status('meteor/0', 'active')
+        juju_status['services']['meteor']['units']['meteor/2'] = {
+            'workload-status': {
+                'current': 'active',
+                'message': 'ready',
+            },
+        }
+        t.wait_for_statuses({'meteor': {'active', 'blocked'}})
+        set_status('meteor/1', 'active')
+        t.wait_for_statuses({'meteor': 'active'})
+        self.assertRaises(TimeoutError, t.wait_for_statuses, {'meteor': ['active'] * 2}, self.timeout)
+        t.wait_for_statuses({'meteor': ['active'] * 3})
+
+        t.wait_for_statuses({'rsyslog-forwarder': 'active'}, self.timeout)
+        self.assertRaises(TimeoutError, t.wait_for_statuses, {'rsyslog-forwarder': 'ready'}, self.timeout)
+
+        self.assertRaises(UnsupportedError, t.wait_for_statuses, {'old': 'unknown'}, self.timeout)
+
+        juju_status.clear()
+        juju_status.update({
+            'machines': {},
+            'services': {
+                's1': {
+                    'units': {
+                        's1/0': {'workload-status': {'current': 'active'}},
+                    },
+                },
+                's2': {
+                    'units': {
+                        's2/0': {'workload-status': {'current': 'waiting'}},
+                    },
+                },
+            },
+        })
+        t = Talisman(['s1', 's2'])
+        t.discover_units(juju_status)
+        self.assertRaises(TimeoutError, t.wait_for_statuses, 'active', self.timeout)
+        set_status('s2/0', 'active')
+        t.wait_for_statuses('active', self.timeout)
 
 
 class TestStatusMessageMatcher(unittest.TestCase):

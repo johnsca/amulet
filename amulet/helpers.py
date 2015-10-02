@@ -102,10 +102,11 @@ def timeout_gen(seconds):
     i = 0
     while True:
         yield i
-        if (datetime.now() - start).total_seconds() > seconds:
+        elapsed = (datetime.now() - start).total_seconds()
+        if elapsed > seconds:
             sys.stderr.write('Timeout occurred, printing juju status...')
             sys.stderr.write(juju(['status']))
-            raise TimeoutError()
+            raise TimeoutError('Timed out after %s seconds' % int(elapsed))
         i += 1
 
 

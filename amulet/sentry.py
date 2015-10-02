@@ -5,6 +5,7 @@ import logging
 import os
 import subprocess
 from datetime import datetime
+from collections import defaultdict
 
 import pkg_resources
 
@@ -333,36 +334,37 @@ class Talisman(object):
 
     """
 
-    def __init__(self, services, rel_sentry='relation-sentry',
-                 juju_env=None, timeout=300):
+    def __init__(self, services, juju_env=None):
         self.service_names = services
         self.unit = {}
         self.service = {}
-
         self.juju_env = juju_env or helpers.default_environment()
+        self._pending_units = defaultdict(int)
 
-        # Save the juju status so we can inspect it later if we don't
-        # end up with what we expect in our dictionary of sentries.
-        self.status = self.wait_for_status(self.juju_env, services, timeout)
-
-        for service in services:
-            if service not in self.status['services']:
+    def discover_units(self, status=None):
+        if not status:
+            status = waiter.status(self.juju_env)
+        for service in self.service_names:
+            if service not in status['services']:
                 continue  # Raise something?
 
-            service_status = self.status['services'][service]
+            service_status = status['services'][service]
 
             if 'units' not in service_status:
                 continue
 
             for unit in service_status['units']:
                 unit_data = service_status['units'][unit]
-                self.unit[unit] = UnitSentry.fromunitdata(unit, unit_data)
+                if unit not in self.unit:
+                    self.unit[unit] = UnitSentry.fromunitdata(unit, unit_data)
                 if 'subordinates' in unit_data:
                     for sub in unit_data['subordinates']:
-                        if sub.split('/')[0] not in services:
+                        if sub.split('/')[0] not in self.service_names:
                             continue
-                        subdata = unit_data['subordinates'][sub]
-                        self.unit[sub] = UnitSentry.fromunitdata(sub, subdata)
+                        if sub not in self.unit:
+                            subdata = unit_data['subordinates'][sub]
+                            self.unit[sub] = UnitSentry.fromunitdata(sub, subdata)
+        self._pending_units.clear()
 
     def __getitem__(self, service):
         """Return the UnitSentry object(s) for ``service``
@@ -504,7 +506,10 @@ class Talisman(object):
         for i in helpers.timeout_gen(timeout):
             status = self.get_status(juju_env)
             if check_status(status, juju_env, services):
-                return waiter.status(juju_env)
+                status = waiter.status(juju_env)
+                self.discover_units(status)
+                gc.collect()
+                return status
             del status
             gc.collect()
 
@@ -522,6 +527,10 @@ class Talisman(object):
         def check_status(status):
             for service_name in self.service_names:
                 service = status.get(service_name, {})
+                known_units = len(self[service_name])
+                expected_units = known_units + self._pending_units[service_name]
+                if len(service) < expected_units:
+                    return False
                 for unit_name, unit in service.items():
                     if unit['agent-status']:
                         if unit['agent-status']['current'] != 'idle':
@@ -543,12 +552,77 @@ class Talisman(object):
             if check_status(status):
                 log.info('Deployment settled in %s seconds.',
                          (datetime.now() - start).total_seconds())
+                self.discover_units()
+                return
+            del status
+            gc.collect()
+
+    def wait_for_statuses(self, statuses, timeout=300):
+        """
+        Wait for specific workload statuses to be set via status-set.
+
+        Note that if this is called on an environment that doesn't support
+        extended status (pre Juju 1.24), it will raise a
+        :class:`~amulet.helpers.UnsupportedError` exception.
+
+        :param dict statuses: A status, or mapping of services to a workload
+            status, a set of statuses, or a list of statuses.  A status can be
+            one of: active, blocked, maintenance, waiting, or unknown.  If a
+            single status is given, all units of the service must match.  If a
+            set is given, then each status in the set must match at least one
+            unit.  If a list is given, then there must be a one-to-one match
+            between the statuses and the units, though the order doesn't matter.
+            A regular expression can also be given.
+        :param int timeout: Number of seconds to wait before timing-out.
+
+        Examples::
+
+            # wait for all units of all deployed services to be active
+            t.wait_for_statuses('active')
+
+            # wait for all units of the ubuntu service to be active
+            t.wait_for_statuses({'ubuntu': 'active'})
+
+            # wait for at least one unit of ubuntu to be active
+            t.wait_for_messages({'ubuntu': {'active'}})
+
+            # wait for ubuntu to have exactly two units, both active
+            t.wait_for_messages({'ubuntu': ['active'] * 2})
+
+            # wait for all units of all deployed services to be active or unknown
+            t.wait_for_statuses(re.compile('active|unknown'))
+        """
+        def get_statuses(service, status):
+            statuses = []
+            for unit in status.get(service, {}).values():
+                if not unit['workload-status']:
+                    raise helpers.UnsupportedError()
+                statuses.append(unit['workload-status'].get('current', 'unknown'))
+            return statuses
+
+        matcher = StatusMessageMatcher()
+        for i in helpers.timeout_gen(timeout):
+            status = self.get_status()
+            if isinstance(statuses, dict):
+                to_check = statuses.items()
+            else:
+                to_check = zip(self.service_names, [statuses] * len(self.service_names))
+            for service, expected in to_check:
+                actual = get_statuses(service, status)
+                if not matcher.check(expected, actual):
+                    break
+            else:
+                self.discover_units()
                 return
             del status
             gc.collect()
 
     def wait_for_messages(self, messages, timeout=300):
-        """Wait for specific extended status messages to be set via status-set.
+        """
+        Wait for specific extended status messages to be set via status-set.
+
+        Note that this matches the *message*, not the status (i.e., the second
+        parameter to ``juju status-set``).
 
         Note that if this is called on an environment that doesn't support
         extended status (pre Juju 1.24), it will raise an
@@ -602,6 +676,7 @@ class Talisman(object):
                 if not matcher.check(expected, actual):
                     break
             else:
+                self.discover_units()
                 return
             del status
             gc.collect()

@@ -210,6 +210,7 @@ class DeployerTests(unittest.TestCase):
         with patch('amulet.deployer.juju') as j:
             d.add_unit('charm')
             j.assert_called_with(['add-unit', 'charm', '-n', '1'])
+        d.sentry.discover_units()
         self.assertTrue('charm/1' in d.sentry.unit)
         self.assertEqual(2, d.services['charm']['num_units'])
 
@@ -275,9 +276,10 @@ class DeployerTests(unittest.TestCase):
         d.add('charm', units=1)
         d.setup()
         with patch('amulet.deployer.juju'):
+            d.add_unit('charm')
             self.assertRaisesRegexp(
                 Exception, 'Error on unit charm/1: hook failed: install',
-                d.add_unit, 'charm')
+                d.sentry.wait_for_status, 'env', ['charm'], timeout=0.01)
 
     @patch('amulet.charm.CharmCache.get_charm')
     def test_remove_unit(self, get_charm):
