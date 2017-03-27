@@ -58,7 +58,16 @@ def run_bzr(args, working_dir, env=None):
     return _as_text(out)
 
 
-def juju(args, env=None):
+def juju(args, env=None, include_env=True):
+    if include_env:
+        model_flag = '-m' if JUJU_VERSION.major == 2 else '-e'
+        for arg in args:
+            if arg.startswith(model_flag):
+                break
+        else:
+            args = list(args)
+            # insert the model arg after the command, but before any other args
+            args[1:0] = [model_flag, default_environment()]
     try:
         p = subprocess.Popen(['juju'] + args, env=env, stdout=subprocess.PIPE,
                              stderr=subprocess.PIPE)
@@ -156,9 +165,9 @@ class JujuVersion(object):
 
     def get_version(self):
         try:
-            version = juju(['version'])
+            version = juju(['version'], include_env=False)
         except:
-            version = juju(['--version'])
+            version = juju(['--version'], include_env=False)
 
         self.update_version(self.parse_version(version))
 
@@ -202,8 +211,7 @@ def default_environment():
     if not model:
         model = os.getenv('JUJU_ENV')
     if not model:
-        model = subprocess.check_output(['juju', 'switch'])
-        model = model.strip().decode('utf8')
+        model = juju(['switch'], include_env=False).strip()
     return model
 
 
