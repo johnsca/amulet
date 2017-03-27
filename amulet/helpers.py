@@ -58,8 +58,8 @@ def run_bzr(args, working_dir, env=None):
     return _as_text(out)
 
 
-def juju(args, env=None, include_env=True):
-    if include_env:
+def juju(args, env=None, include_model=True):
+    if include_model:
         model_flag = '-m' if JUJU_VERSION.major == 2 else '-e'
         for arg in args:
             if arg.startswith(model_flag):
@@ -165,9 +165,9 @@ class JujuVersion(object):
 
     def get_version(self):
         try:
-            version = juju(['version'], include_env=False)
+            version = juju(['version'], include_model=False)
         except:
-            version = juju(['--version'], include_env=False)
+            version = juju(['--version'], include_model=False)
 
         self.update_version(self.parse_version(version))
 
@@ -211,7 +211,7 @@ def default_environment():
     if not model:
         model = os.getenv('JUJU_ENV')
     if not model:
-        model = juju(['switch'], include_env=False).strip()
+        model = juju(['switch'], include_model=False).strip()
     return model
 
 
