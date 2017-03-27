@@ -189,9 +189,22 @@ def raise_status(code, msg=None):
 
 
 def default_environment():
-    return os.getenv(
-        'JUJU_MODEL',
-        subprocess.check_output(['juju', 'switch']).strip().decode('utf8'))
+    """
+    Get the current active (default) Juju model / environment.
+
+    It will check, in order of preference:
+
+    * The JUJU_MODEL environment variable
+    * The JUJU_ENV environment variable
+    * The output of `juju switch`
+    """
+    model = os.getenv('JUJU_MODEL')
+    if not model:
+        model = os.getenv('JUJU_ENV')
+    if not model:
+        model = subprocess.check_output(['juju', 'switch'])
+        model = model.strip().decode('utf8')
+    return model
 
 
 class reify(object):
